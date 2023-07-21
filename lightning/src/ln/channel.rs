@@ -449,6 +449,25 @@ struct HTLCStats {
 	on_holder_tx_holding_cell_htlcs_count: u32, // dust HTLCs *non*-included
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct HTLCDetails {
+	htlc_id: Option<u64>,
+	amount_msat: u64,
+	cltv_expiry: u32,
+	payment_hash: PaymentHash,
+	skimmed_fee_msat: Option<u64>,
+	is_dust: bool,
+}
+
+impl_writeable_tlv_based!(HTLCDetails, {
+	(1, htlc_id, option),
+	(2, amount_msat, required),
+	(4, cltv_expiry, required),
+	(6, payment_hash, required),
+	(7, skimmed_fee_msat, option),
+	(8, is_dust, required),
+});
+
 /// An enum gathering stats on commitment transaction, either local or remote.
 struct CommitmentStats<'a> {
 	tx: CommitmentTransaction, // the transaction info
@@ -1569,6 +1588,84 @@ impl<Signer: ChannelSigner> ChannelContext<Signer> {
 			}
 		}
 		stats
+	}
+
+
+	/// Returns information on all pending inbound HTLCs.
+	pub fn get_pending_inbound_htlc_details(&self) -> Vec<HTLCDetails> {
+		let mut inbound_details = Vec::new();
+		let htlc_success_dust_limit = if self.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			0
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			dust_buffer_feerate * htlc_success_tx_weight(self.get_channel_type()) / 1000
+		};
+		let holder_dust_limit_success_sat = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
+		for ref htlc in self.pending_inbound_htlcs.iter() {
+			// Does not include HTLCs in the process of being fulfilled to be compatible with
+			// the computation of `AvailableBalances::balance_msat`.
+			if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) = htlc.state {
+				continue;
+			}
+			inbound_details.push(HTLCDetails{
+				htlc_id: Some(htlc.htlc_id),
+				amount_msat: htlc.amount_msat,
+				cltv_expiry: htlc.cltv_expiry,
+				payment_hash: htlc.payment_hash,
+				skimmed_fee_msat: None,
+				is_dust: htlc.amount_msat / 1000 < holder_dust_limit_success_sat,
+			});
+		}
+		inbound_details
+	}
+
+	/// Returns information on all pending outbound HTLCs.
+	pub fn get_pending_outbound_htlc_details(&self) -> Vec<HTLCDetails> {
+		let mut outbound_details = Vec::new();
+		let htlc_timeout_dust_limit = if self.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			0
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			dust_buffer_feerate * htlc_success_tx_weight(self.get_channel_type()) / 1000
+		};
+		let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
+		for ref htlc in self.pending_outbound_htlcs.iter() {
+			// Does not include HTLCs in the process of being fulfilled to be compatible with
+			// the computation of `AvailableBalances::balance_msat`.
+			match htlc.state {
+				OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(_))|OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_))|OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) => {
+					continue;
+				},
+				_ => {},
+			}
+			outbound_details.push(HTLCDetails{
+				htlc_id: Some(htlc.htlc_id),
+				amount_msat: htlc.amount_msat,
+				cltv_expiry: htlc.cltv_expiry,
+				payment_hash: htlc.payment_hash,
+				skimmed_fee_msat: htlc.skimmed_fee_msat,
+				is_dust: htlc.amount_msat / 1000 < holder_dust_limit_timeout_sat,
+			});
+		}
+		for update in self.holding_cell_htlc_updates.iter() {
+			if let &HTLCUpdateAwaitingACK::AddHTLC {
+				amount_msat,
+				cltv_expiry,
+				payment_hash,
+				skimmed_fee_msat,
+				..
+			} = update {
+				outbound_details.push(HTLCDetails{
+					htlc_id: None,
+					amount_msat: amount_msat,
+					cltv_expiry: cltv_expiry,
+					payment_hash: payment_hash,
+					skimmed_fee_msat: skimmed_fee_msat,
+					is_dust: amount_msat / 1000 < holder_dust_limit_timeout_sat,
+				});
+			}
+		}
+		outbound_details
 	}
 
 	/// Get the available balances, see [`AvailableBalances`]'s fields for more info.
@@ -7415,16 +7512,17 @@ mod tests {
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::network::constants::Network;
 	use hex;
-	use crate::ln::PaymentHash;
-	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
+	use crate::ln::{PaymentHash, PaymentPreimage};
+	use crate::ln::channelmanager::{self, HTLCSource, PaymentId, PendingHTLCRouting, PendingHTLCStatus, PendingHTLCInfo};
 	use crate::ln::channel::InitFeatures;
-	use crate::ln::channel::{Channel, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat};
+	use crate::ln::channel::{Channel, InboundHTLCOutput, InboundHTLCRemovalReason, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, commit_tx_fee_msat, HTLCUpdateAwaitingACK, OutboundHTLCOutcome};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::ln::features::ChannelTypeFeatures;
-	use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
+	use crate::ln::msgs::{ChannelUpdate, DecodeError, UnsignedChannelUpdate, MAX_VALUE_MSAT, OnionPacket, OnionErrorPacket};
 	use crate::ln::script::ShutdownScript;
 	use crate::ln::chan_utils;
 	use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
+	use crate::ln::onion_utils::HTLCFailReason;
 	use crate::chain::BestBlock;
 	use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
 	use crate::sign::{ChannelSigner, InMemorySigner, EntropySource, SignerProvider};
@@ -8892,5 +8990,165 @@ mod tests {
 			&accept_channel_msg, &config.channel_handshake_limits, &simple_anchors_init
 		);
 		assert!(res.is_err());
+	}
+
+	#[test]
+	fn test_channel_balance_slices() {
+		let fee_est = TestFeeEstimator{fee_est: 15000};
+		let secp_ctx = Secp256k1::new();
+		let signer = InMemorySigner::new(
+			&secp_ctx,
+			SecretKey::from_slice(&hex::decode("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..]).unwrap(),
+			SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
+			SecretKey::from_slice(&hex::decode("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
+			SecretKey::from_slice(&hex::decode("3333333333333333333333333333333333333333333333333333333333333333").unwrap()[..]).unwrap(),
+			SecretKey::from_slice(&hex::decode("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),
+			// These aren't set in the test vectors:
+			[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+			10_000_000,
+			[0; 32],
+			[0; 32],
+		);
+		let keys_provider = Keys { signer: signer.clone() };
+		let counterparty_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let config = UserConfig::default();
+		let mut chan = OutboundV1Channel::<InMemorySigner>::new(&LowerBoundedFeeEstimator::new(&fee_est), &&keys_provider, &&keys_provider, counterparty_node_id, &channelmanager::provided_init_features(&config), 10_000_000, 0, 42, &config, 0, 42).unwrap();
+
+		chan.context.counterparty_selected_channel_reserve_satoshis = Some(123_456);
+		chan.context.value_to_self_msat = 7_000_000_000;
+		chan.context.feerate_per_kw = 0;
+		chan.context.counterparty_max_htlc_value_in_flight_msat = 1_000_000_000;
+
+		chan.context.pending_inbound_htlcs.push(InboundHTLCOutput{
+			htlc_id: 0,
+			amount_msat: 1_000_000,
+			cltv_expiry: 500,
+			payment_hash: PaymentHash(Sha256::hash(&[1; 32]).into_inner()),
+			state: InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(PaymentPreimage([1; 32]))),
+		});
+		chan.context.pending_inbound_htlcs.push(InboundHTLCOutput{
+			htlc_id: 1,
+			amount_msat: 2_000_000,
+			cltv_expiry: 501,
+			payment_hash: PaymentHash(Sha256::hash(&[1; 32]).into_inner()),
+			state: InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(OnionErrorPacket { data: [1; 32].to_vec() })),
+		});
+		chan.context.pending_inbound_htlcs.push(InboundHTLCOutput{
+				htlc_id: 2,
+				amount_msat: 4_000_000,
+				cltv_expiry: 502,
+				payment_hash: PaymentHash(Sha256::hash(&[2; 32]).into_inner()),
+				state: InboundHTLCState::Committed,
+		});
+		chan.context.pending_inbound_htlcs.push(InboundHTLCOutput{
+				htlc_id: 3,
+				amount_msat: 8_000_000,
+				cltv_expiry: 503,
+				payment_hash: PaymentHash(Sha256::hash(&[3; 32]).into_inner()),
+				state: InboundHTLCState::RemoteAnnounced(PendingHTLCStatus::Forward(PendingHTLCInfo{
+					routing: PendingHTLCRouting::Forward {
+						onion_packet: OnionPacket{
+							version: 0,
+							public_key: Ok(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())),
+							hop_data: [0; 20*65],
+							hmac: [0; 32],
+						},
+						short_channel_id: 0,
+					},
+					incoming_shared_secret: [0; 32],
+					payment_hash: PaymentHash(Sha256::hash(&[3; 32]).into_inner()),
+					incoming_amt_msat: Some(4_000_000),
+					outgoing_amt_msat: 4_000_000,
+					outgoing_cltv_value: 10000,
+					skimmed_fee_msat: None,
+				})),
+		});
+		chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput{
+			htlc_id: 4,
+			amount_msat: 16_000_000,
+			cltv_expiry: 504,
+			payment_hash: PaymentHash(Sha256::hash(&[3; 32]).into_inner()),
+			state: OutboundHTLCState::Committed,
+			source: HTLCSource::OutboundRoute {
+				path: Path { hops: Vec::new(), blinded_tail: None },
+				session_priv: SecretKey::from_slice(&[4; 32]).unwrap(),
+				first_hop_htlc_msat: 0,
+				payment_id: PaymentId([5; 32]),
+			},
+			skimmed_fee_msat: None,
+		});
+		chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput{
+			htlc_id: 5,
+			amount_msat: 32_000_000,
+			cltv_expiry: 505,
+			payment_hash: PaymentHash(Sha256::hash(&[3; 32]).into_inner()),
+			state: OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(None)),
+			source: HTLCSource::OutboundRoute {
+				path: Path { hops: Vec::new(), blinded_tail: None },
+				session_priv: SecretKey::from_slice(&[4; 32]).unwrap(),
+				first_hop_htlc_msat: 0,
+				payment_id: PaymentId([5; 32]),
+			},
+			skimmed_fee_msat: None,
+		});
+		chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput{
+			htlc_id: 6,
+			amount_msat: 64_000_000,
+			cltv_expiry: 506,
+			payment_hash: PaymentHash(Sha256::hash(&[3; 32]).into_inner()),
+			state: OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Failure(HTLCFailReason::from_failure_code(0x4000 | 8))),
+			source: HTLCSource::OutboundRoute {
+				path: Path { hops: Vec::new(), blinded_tail: None },
+				session_priv: SecretKey::from_slice(&[4; 32]).unwrap(),
+				first_hop_htlc_msat: 0,
+				payment_id: PaymentId([5; 32]),
+			},
+			skimmed_fee_msat: None,
+		});
+		chan.context.pending_outbound_htlcs.push(OutboundHTLCOutput{
+			htlc_id: 7,
+			amount_msat: 128_000_000,
+			cltv_expiry: 507,
+			payment_hash: PaymentHash(Sha256::hash(&[3; 32]).into_inner()),
+			state: OutboundHTLCState::LocalAnnounced(Box::new(OnionPacket{
+				version: 0,
+				public_key: Ok(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())),
+				hop_data: [0; 20*65],
+				hmac: [0; 32],
+			})),
+			source: HTLCSource::OutboundRoute {
+				path: Path { hops: Vec::new(), blinded_tail: None },
+				session_priv: SecretKey::from_slice(&[4; 32]).unwrap(),
+				first_hop_htlc_msat: 0,
+				payment_id: PaymentId([5; 32]),
+			},
+			skimmed_fee_msat: None,
+		});
+		chan.context.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::AddHTLC {
+			amount_msat: 256_000_000,
+			payment_hash: PaymentHash(Sha256::hash(&[3; 32]).into_inner()),
+			cltv_expiry: 506,
+			source: HTLCSource::OutboundRoute {
+				path: Path { hops: Vec::new(), blinded_tail: None },
+				session_priv: SecretKey::from_slice(&[4; 32]).unwrap(),
+				first_hop_htlc_msat: 0,
+				payment_id: PaymentId([5; 32]),
+			},
+			onion_routing_packet: OnionPacket{
+				version: 0,
+				public_key: Ok(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())),
+				hop_data: [0; 20*65],
+				hmac: [0; 32],
+			},
+			skimmed_fee_msat: None,
+		});
+
+		let pending_inbound_total_msat: u64 = chan.context.get_pending_inbound_htlc_details().iter().map(|details| details.amount_msat).sum();
+		let pending_outbound_total_msat: u64 = chan.context.get_pending_outbound_htlc_details().iter().map(|details| details.amount_msat).sum();
+		let balances = chan.context.get_available_balances(&LowerBoundedFeeEstimator::new(&fee_est));
+
+		assert_eq!(balances.balance_msat, 7_000_000_000 + 1_000_000 - 16_000_000 - 32_000_000 - 64_000_000 - 128_000_000 - 256_000_000);
+		assert_eq!(pending_inbound_total_msat, 2_000_000 + 4_000_000 + 8_000_000);
+		assert_eq!(pending_outbound_total_msat, 16_000_000 + 64_000_000 + 128_000_000 + 256_000_000);
 	}
 }
