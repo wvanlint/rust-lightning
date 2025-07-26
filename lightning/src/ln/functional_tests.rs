@@ -11730,87 +11730,170 @@ pub fn test_payment_traces() {
 	let channel_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2).2;
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
 
-	assert_eq!(node_cfgs[1].logger.span_boundaries.lock().unwrap().as_ref(), vec![
-		TestSpanBoundary::Start(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }, None),
-		TestSpanBoundary::Start(
-			Span::InboundHTLCState { state: None },
-			Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
-		),
-		TestSpanBoundary::Start(
-			Span::WaitingOnPeer,
-			Some(Span::InboundHTLCState { state: None }),
-		),
-		TestSpanBoundary::End(Span::WaitingOnPeer),
-		TestSpanBoundary::End(Span::InboundHTLCState { state: None }),
-		TestSpanBoundary::Start(
-			Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd) },
-			Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
-		),
-		TestSpanBoundary::End(Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd) }),
-		TestSpanBoundary::Start(
-			Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd) },
-			Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
-		),
-		TestSpanBoundary::Start(
-			Span::WaitingOnMonitorPersist,
-			Some(Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd) }),
-		),
-		TestSpanBoundary::End(Span::WaitingOnMonitorPersist),
-		TestSpanBoundary::Start(
-			Span::WaitingOnPeer,
-			Some(Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd) }),
-		),
-		TestSpanBoundary::End(Span::WaitingOnPeer),
-		TestSpanBoundary::End(Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd) }),
-		TestSpanBoundary::Start(
-			Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::Committed) },
-			Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 })
-		),
-		TestSpanBoundary::Start(Span::Forward, Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 })),
-		TestSpanBoundary::Start(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }, Some(Span::Forward)),
-		TestSpanBoundary::Start(
-			Span::OutboundHTLCState { state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd },
-			Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
-		),
-		TestSpanBoundary::End(Span::OutboundHTLCState { state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd }),
-		TestSpanBoundary::Start(
-			Span::OutboundHTLCState { state: OutboundHTLCStateDetails::Committed },
-			Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
-		),
-		TestSpanBoundary::End(Span::OutboundHTLCState { state: OutboundHTLCStateDetails::Committed }),
-		TestSpanBoundary::Start(
-			Span::OutboundHTLCState { state: OutboundHTLCStateDetails::Committed },
-			Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
-		),
-		TestSpanBoundary::End(Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::Committed) }),
-		TestSpanBoundary::Start(
-			Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill) },
-			Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
-		),
-		TestSpanBoundary::Start(
-			Span::WaitingOnMonitorPersist,
-			Some(Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill) }),
-		),
-		TestSpanBoundary::End(Span::WaitingOnMonitorPersist),
-		TestSpanBoundary::Start(
-			Span::WaitingOnPeer,
-			Some(Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill) }),
-		),
-		TestSpanBoundary::End(Span::OutboundHTLCState { state: OutboundHTLCStateDetails::Committed }),
-		TestSpanBoundary::Start(
-			Span::OutboundHTLCState { state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess },
-			Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
-		),
-		TestSpanBoundary::End(Span::OutboundHTLCState { state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess }),
-		TestSpanBoundary::Start(
-			Span::OutboundHTLCState { state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess },
-			Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
-		),
-		TestSpanBoundary::End(Span::OutboundHTLCState { state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess }),
-		TestSpanBoundary::End(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
-		TestSpanBoundary::End(Span::Forward),
-		TestSpanBoundary::End(Span::WaitingOnPeer),
-		TestSpanBoundary::End(Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill) }),
-		TestSpanBoundary::End(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 })
-	]);
+	assert_eq!(
+		node_cfgs[1].logger.span_boundaries.lock().unwrap().as_ref(),
+		vec![
+			TestSpanBoundary::Start(
+				Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 },
+				None
+			),
+			TestSpanBoundary::Start(
+				Span::InboundHTLCState { state: None },
+				Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
+			),
+			TestSpanBoundary::Start(
+				Span::WaitingOnPeer,
+				Some(Span::InboundHTLCState { state: None }),
+			),
+			TestSpanBoundary::End(Span::WaitingOnPeer),
+			TestSpanBoundary::End(Span::InboundHTLCState { state: None }),
+			TestSpanBoundary::Start(
+				Span::InboundHTLCState {
+					state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd)
+				},
+				Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
+			),
+			TestSpanBoundary::End(Span::InboundHTLCState {
+				state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd)
+			}),
+			TestSpanBoundary::Start(
+				Span::InboundHTLCState {
+					state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd)
+				},
+				Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
+			),
+			TestSpanBoundary::Start(
+				Span::WaitingOnMonitorPersist,
+				Some(Span::InboundHTLCState {
+					state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd)
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnMonitorPersist),
+			TestSpanBoundary::Start(
+				Span::WaitingOnPeer,
+				Some(Span::InboundHTLCState {
+					state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd)
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnPeer),
+			TestSpanBoundary::End(Span::InboundHTLCState {
+				state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd)
+			}),
+			TestSpanBoundary::Start(
+				Span::InboundHTLCState { state: Some(InboundHTLCStateDetails::Committed) },
+				Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 })
+			),
+			TestSpanBoundary::Start(
+				Span::Forward,
+				Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 })
+			),
+			TestSpanBoundary::Start(
+				Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 },
+				Some(Span::Forward)
+			),
+			TestSpanBoundary::Start(
+				Span::OutboundHTLCState {
+					state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd
+				},
+				Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
+			),
+			TestSpanBoundary::Start(
+				Span::WaitingOnMonitorPersist,
+				Some(Span::OutboundHTLCState {
+					state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnMonitorPersist,),
+			TestSpanBoundary::Start(
+				Span::WaitingOnPeer,
+				Some(Span::OutboundHTLCState {
+					state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnPeer,),
+			TestSpanBoundary::End(Span::OutboundHTLCState {
+				state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd
+			}),
+			TestSpanBoundary::Start(
+				Span::OutboundHTLCState { state: OutboundHTLCStateDetails::Committed },
+				Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
+			),
+			TestSpanBoundary::End(Span::OutboundHTLCState {
+				state: OutboundHTLCStateDetails::Committed
+			}),
+			TestSpanBoundary::Start(
+				Span::OutboundHTLCState { state: OutboundHTLCStateDetails::Committed },
+				Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
+			),
+			TestSpanBoundary::Start(
+				Span::WaitingOnPeer,
+				Some(Span::OutboundHTLCState { state: OutboundHTLCStateDetails::Committed }),
+			),
+			TestSpanBoundary::End(Span::InboundHTLCState {
+				state: Some(InboundHTLCStateDetails::Committed)
+			}),
+			TestSpanBoundary::Start(
+				Span::InboundHTLCState {
+					state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill)
+				},
+				Some(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 }),
+			),
+			TestSpanBoundary::Start(
+				Span::WaitingOnMonitorPersist,
+				Some(Span::InboundHTLCState {
+					state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill)
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnMonitorPersist),
+			TestSpanBoundary::Start(
+				Span::WaitingOnPeer,
+				Some(Span::InboundHTLCState {
+					state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill)
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnPeer),
+			TestSpanBoundary::End(Span::OutboundHTLCState {
+				state: OutboundHTLCStateDetails::Committed
+			}),
+			TestSpanBoundary::Start(
+				Span::OutboundHTLCState {
+					state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess
+				},
+				Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
+			),
+			TestSpanBoundary::End(Span::OutboundHTLCState {
+				state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess
+			}),
+			TestSpanBoundary::Start(
+				Span::OutboundHTLCState {
+					state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess
+				},
+				Some(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
+			),
+			TestSpanBoundary::Start(
+				Span::WaitingOnMonitorPersist,
+				Some(Span::OutboundHTLCState {
+					state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnMonitorPersist),
+			TestSpanBoundary::Start(
+				Span::WaitingOnPeer,
+				Some(Span::OutboundHTLCState {
+					state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess
+				}),
+			),
+			TestSpanBoundary::End(Span::WaitingOnPeer),
+			TestSpanBoundary::End(Span::OutboundHTLCState {
+				state: OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess
+			}),
+			TestSpanBoundary::End(Span::OutboundHTLC { channel_id: channel_id_2, htlc_id: 0 }),
+			TestSpanBoundary::End(Span::Forward),
+			TestSpanBoundary::End(Span::WaitingOnPeer),
+			TestSpanBoundary::End(Span::InboundHTLCState {
+				state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill)
+			}),
+			TestSpanBoundary::End(Span::InboundHTLC { channel_id: channel_id_1, htlc_id: 0 })
+		]
+	);
 }
